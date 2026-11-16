@@ -1,41 +1,38 @@
-// ai-excited-01 entry (Node 22, standard library only): the image is the
-// entry.png beside this file, drawn in code by draw_excited.py at build time,
-// and this program copies it to /output/entry.png. The gate takes a whole
-// PNG or JPEG of at most 1 MiB and 1024 by 1024 pixels, and the judge sees
-// exactly the bytes copied.
-//
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// ai-excited-01 — "One small leap becomes a universe"
+// Node 22, standard library only. Copies the committed entry.png to the
+// output location the grader expects (/output/entry.png by default).
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { copyFileSync, readFileSync, statSync } from 'node:fs';
-import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+const here = dirname(fileURLToPath(import.meta.url));
+const src = join(here, "entry.png");
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+const dest = join(outDir, "entry.png");
 
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const src = new URL('./entry.png', import.meta.url);
-const data = readFileSync(src);
+mkdirSync(outDir, { recursive: true });
+copyFileSync(src, dest);
 
-// PNG magic: 89 50 4E 47 0D 0A 1A 0A
-if (data[0] !== 0x89 || data[1] !== 0x50 || data[2] !== 0x4e || data[3] !== 0x47) {
-  throw new Error('entry.png is not a PNG');
+const bytes = readFileSync(dest);
+
+// Gate asserts: the judge only sees these bytes, so fail loudly if the
+// image ever stops matching the competition limits.
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+for (let i = 0; i < PNG_MAGIC.length; i++) {
+  if (bytes[i] !== PNG_MAGIC[i]) throw new Error("entry.png is not a PNG");
 }
-if (data.length > 1048576) {
-  throw new Error(`entry.png is ${data.length} bytes, over the 1 MiB cap`);
+if (bytes.length > 1_048_576) {
+  throw new Error(`entry.png is ${bytes.length} bytes, over the 1 MiB cap`);
 }
-// IHDR: width/height are the first 8 bytes after the 8-byte signature + 4-byte
-// length + 4-byte 'IHDR' tag (offsets 16 and 20, big-endian).
-const width = data.readUInt32BE(16);
-const height = data.readUInt32BE(20);
+
+// IHDR: width and height are big-endian uint32s at byte offsets 16 and 20.
+const width = bytes.readUInt32BE(16);
+const height = bytes.readUInt32BE(20);
 if (width > 1024 || height > 1024) {
   throw new Error(`entry.png is ${width}x${height}, over the 1024x1024 cap`);
 }
 
-const dest = join(outDir, 'entry.png');
-copyFileSync(src, dest);
-// The judge sees exactly these bytes: prove the copy is byte-identical.
-const srcHash = createHash('sha256').update(data).digest('hex');
-const outHash = createHash('sha256').update(readFileSync(dest)).digest('hex');
-if (srcHash !== outHash || statSync(dest).size !== data.length) {
-  throw new Error('copy to /output/entry.png did not match the source');
-}
-console.log(`copied entry.png (${width}x${height}, ${data.length} bytes, sha256 ${srcHash.slice(0, 16)}…)`);
+// Copy verification: what landed in /output must equal the committed file.
+const source = readFileSync(src);
+if (!source.equals(bytes)) throw new Error("output differs from entry.png");
+console.log(`wrote ${dest} (${bytes.length} bytes, ${width}x${height})`);
