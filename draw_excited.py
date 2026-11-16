@@ -1,406 +1,413 @@
 #!/usr/bin/env python3
-"""Draw the ai-excited-01 entry: 'One small leap becomes a universe'.
+"""Build-time draw script for ai-excited-01 (NOT run by the grader).
 
-A goldfish leaps from its bowl (bottom-left); its splash becomes a curling
-wave that spirals up into a dense galaxy of stars and confetti (top-right).
-Saturated orange/magenta on deep indigo, bold tilted yellow WOW! text.
+Draws "One small leap becomes a universe": a tiny goldfish leaps out of
+its little glass bowl (bottom left); its splash becomes a huge curling
+wave that spirals up into a galaxy of stars and confetti (top right).
+Saturated orange/magenta on deep indigo, bold tilted yellow WOW!.
 
-Deterministic: fixed seed, 2x supersample, Lanczos downscale to 1024x1024.
-Usage: python3 draw_excited.py <output-png-path>
+Deterministic: seed 20261116, 2x supersample + Lanczos downscale to
+1024x1024. PIL lesson applied throughout: ImageDraw on RGBA replaces
+pixels instead of blending, so every translucent effect lives on its own
+transparent layer and is merged with Image.alpha_composite (and the draw
+handle is re-created after each composite).
+
+Iteration 3 fixes over v2: foam crest now hugs the very edge and only
+runs along the crest (v2's foam still read as a wide white ribbon);
+smaller curl-cap disc; fainter highlight ribbon; faint stars fill the
+lower frame so the bottom-right is not empty.
+
+Usage: python3 draw_excited.py   (writes entry.png next to this file)
 """
+
 import math
 import random
-import sys
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
-
-SEED = 20261116
 SS = 2                      # supersample factor
-W = 1024 * SS               # working canvas
-FINAL = 1024
-OUT = sys.argv[1] if len(sys.argv) > 1 else "entry.png"
-
-rng = random.Random(SEED)
-
-# ---------------------------------------------------------------- palette
-INDIGO_DEEP = (10, 8, 38)
-INDIGO_MID = (26, 18, 72)
-VIOLET_GLOW = (74, 38, 130)
-MAGENTA = (235, 40, 150)
-ORANGE = (255, 122, 26)
-GOLD = (255, 176, 32)
-YELLOW = (255, 214, 0)
-CYAN = (80, 220, 255)
-ICE = (190, 235, 255)
-WHITE = (255, 255, 255)
+W = H = 1024                # final size
+SW = SH = W * SS
+SEED = 20261116
+OUT = "entry.png"
 
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-
-def lerp(a, b, t):
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+rng = random.Random(SEED)
 
 
-def layer():
-    return Image.new("RGBA", (W, W), (0, 0, 0, 0))
+# ---------------------------------------------------------------- helpers
+def s(v):
+    """Final-space coordinate -> supersampled coordinate."""
+    return int(round(v * SS))
 
 
-def soft_disc(draw, cx, cy, r, color, alpha):
-    """A radial-gradient disc (bright core fading to transparent)."""
-    d = int(r * 2)
-    tmp = Image.new("RGBA", (d, d), (0, 0, 0, 0))
-    td = ImageDraw.Draw(tmp)
+def new_layer():
+    return Image.new("RGBA", (SW, SH), (0, 0, 0, 0))
+
+
+def catmull_rom(points, samples=24):
+    """Dense smooth curve through points (final-space coords)."""
+    pts = [points[0]] + list(points) + [points[-1]]
+    out = []
+    for i in range(len(pts) - 3):
+        p0, p1, p2, p3 = pts[i], pts[i + 1], pts[i + 2], pts[i + 3]
+        for j in range(samples):
+            t = j / samples
+            t2, t3 = t * t, t * t * t
+            x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t
+                       + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                       + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+            y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t
+                       + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                       + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+            out.append((x, y))
+    out.append(points[-1])
+    return out
+
+
+def soft_disc(layer, cx, cy, r, color, peak):
+    """Radial glow: concentric discs, alpha falling off. Own layer in."""
+    d = ImageDraw.Draw(layer)
     steps = 24
     for i in range(steps, 0, -1):
-        t = i / steps
-        rr = r * t
-        a = int(alpha * (1 - t) ** 2)
-        td.ellipse([r - rr, r - rr, r + rr, r + rr],
-                   fill=color + (a,))
-    tmp = tmp.filter(ImageFilter.GaussianBlur(r / 6))
-    draw._image.alpha_composite(tmp, (int(cx - r), int(cy - r)))
+        rr = r * i / steps
+        a = int(peak * (1 - i / steps) ** 1.6)
+        d.ellipse([s(cx - rr), s(cy - rr), s(cx + rr), s(cy + rr)],
+                  fill=color + (a,))
 
 
-# ================================================================ canvas
-base = Image.new("RGBA", (W, W), INDIGO_DEEP + (255,))
-bd = ImageDraw.Draw(base)
-
-# vertical+radial indigo gradient: lighter toward the galaxy (top-right)
-gx, gy = 0.78 * W, 0.22 * W
-grad = Image.new("RGBA", (W, W))
-gd = ImageDraw.Draw(grad)
-for y in range(0, W, 8):
-    for x in range(0, W, 8):
-        d = math.hypot(x - gx, y - gy) / (W * 0.95)
-        t = max(0.0, min(1.0, d))
-        c = lerp(VIOLET_GLOW, INDIGO_DEEP, t ** 1.4)
-        gd.rectangle([x, y, x + 8, y + 8], fill=c + (255,))
-grad = grad.filter(ImageFilter.GaussianBlur(18))
-base.alpha_composite(grad)
-
-# faint magenta / orange nebula clouds near the galaxy
-neb = layer()
-nd = ImageDraw.Draw(neb)
-for (cx, cy, r, col, a) in [
-        (0.80 * W, 0.20 * W, 0.30 * W, (200, 40, 140), 46),
-        (0.66 * W, 0.30 * W, 0.22 * W, (120, 40, 200), 40),
-        (0.88 * W, 0.38 * W, 0.20 * W, (255, 110, 40), 34),
-        (0.55 * W, 0.12 * W, 0.18 * W, (60, 60, 220), 30)]:
-    soft_disc(nd, cx, cy, r, col, a)
-neb = neb.filter(ImageFilter.GaussianBlur(60))
-base.alpha_composite(neb)
-
-# sparse background stars over the whole sky
-sky = layer()
-sd = ImageDraw.Draw(sky)
-for _ in range(260):
-    x = rng.uniform(0, W)
-    y = rng.uniform(0, W)
-    r = rng.uniform(0.8, 2.6) * SS
-    a = rng.randint(60, 200)
-    col = rng.choice([WHITE, ICE, (255, 230, 170)])
-    sd.ellipse([x - r, y - r, x + r, y + r], fill=col + (a,))
-base.alpha_composite(sky)
-
-# ================================================================ burst rays (soft, <=9)
-rays = layer()
-rd = ImageDraw.Draw(rays)
-cxg, cyg = 0.79 * W, 0.21 * W
-for i in range(7):
-    ang = math.radians(-160 + i * 26 + rng.uniform(-6, 6))
-    length = rng.uniform(0.30, 0.46) * W
-    spread = math.radians(rng.uniform(4, 7))
-    x2 = cxg + math.cos(ang) * length
-    y2 = cyg + math.sin(ang) * length
-    px = math.cos(ang + math.pi / 2) * length * math.tan(spread)
-    py = math.sin(ang + math.pi / 2) * length * math.tan(spread)
-    rd.polygon([(cxg, cyg), (x2 + px, y2 + py), (x2 - px, y2 - py)],
-               fill=(255, 220, 130, 26))
-rays = rays.filter(ImageFilter.GaussianBlur(14))
-base.alpha_composite(rays)
-
-# ================================================================ galaxy
-# Dense spiral: 3 arms, many stars per arm + dust motes, core glow.
-gal = layer()
-gd2 = ImageDraw.Draw(gal)
-core_r = 0.055 * W
-soft_disc(gd2, cxg, cyg, 0.16 * W, (255, 240, 200), 150)
-soft_disc(gd2, cxg, cyg, 0.09 * W, WHITE, 200)
-for arm in range(3):
-    base_ang = arm * (2 * math.pi / 3) + 0.35
-    for k in range(240):
-        t = (k / 240) ** 0.8
-        ang = base_ang + t * 3.4
-        rad = 0.02 * W + t * 0.235 * W
-        jx = rng.gauss(0, 0.012 * W * (0.4 + t))
-        jy = rng.gauss(0, 0.012 * W * (0.4 + t))
-        x = cxg + math.cos(ang) * rad + jx
-        y = cyg + math.sin(ang) * rad * 0.82 + jy
-        r = rng.uniform(1.0, 3.4) * SS * (1.15 - 0.55 * t)
-        col = rng.choice([WHITE, WHITE, GOLD, (255, 200, 220),
-                          ICE, (255, 170, 90)])
-        a = rng.randint(150, 255)
-        gd2.ellipse([x - r, y - r, x + r, y + r], fill=col + (a,))
-        if rng.random() < 0.10:  # sparkle cross on a few bright stars
-            s = r * 2.6
-            gd2.line([x - s, y, x + s, y], fill=col + (120,), width=1)
-            gd2.line([x, y - s, x, y + s], fill=col + (120,), width=1)
-# dust motes filling the disc between arms
-for _ in range(420):
-    ang = rng.uniform(0, 2 * math.pi)
-    rad = rng.uniform(0, 0.26 * W) * math.sqrt(rng.random())
-    x = cxg + math.cos(ang) * rad
-    y = cyg + math.sin(ang) * rad * 0.82
-    r = rng.uniform(0.6, 1.8) * SS
-    col = rng.choice([(255, 190, 220), (255, 220, 160), ICE, WHITE])
-    gd2.ellipse([x - r, y - r, x + r, y + r],
-                fill=col + (rng.randint(70, 170),))
-gal = gal.filter(ImageFilter.GaussianBlur(1.2))
-base.alpha_composite(gal)
-
-# ================================================================ wave
-# A curling band: a sweeping Bezier from the bowl up toward the galaxy,
-# ending in a small spiral curl around the galaxy's edge.
-wave = layer()
-wd = ImageDraw.Draw(wave)
+def sparkle(d, x, y, r, color):
+    """4-point star sparkle."""
+    w = max(1.0, r * 0.28)
+    d.polygon([(s(x), s(y - r)), (s(x + w), s(y - w)), (s(x + r), s(y)),
+               (s(x + w), s(y + w)), (s(x), s(y + r)), (s(x - w), s(y + w)),
+               (s(x - r), s(y)), (s(x - w), s(y - w))], fill=color)
 
 
-def bezier(t, p0, p1, p2, p3):
-    mt = 1 - t
-    x = (mt**3 * p0[0] + 3 * mt**2 * t * p1[0] + 3 * mt * t**2 * p2[0]
-         + t**3 * p3[0])
-    y = (mt**3 * p0[1] + 3 * mt**2 * t * p1[1] + 3 * mt * t**2 * p2[1]
-         + t**3 * p3[1])
-    return x, y
+def star_dot(d, x, y, r, color):
+    d.ellipse([s(x - r), s(y - r), s(x + r), s(y + r)], fill=color)
 
 
-pts = [bezier(t / 110, (0.30 * W, 0.80 * W), (0.44 * W, 0.60 * W),
-              (0.60 * W, 0.56 * W), (0.72 * W, 0.40 * W))
-       for t in range(111)]
-# tip curls around the galaxy core
-for k in range(41):
-    t = k / 40
-    ang = math.radians(105 - 160 * t)
-    rad = (0.095 - 0.04 * t) * W
-    pts.append((cxg + math.cos(ang) * rad, cyg + math.sin(ang) * rad))
+# ------------------------------------------------------------------- fish
+def fish_layer(cx, cy, length, angle_deg, body=(255, 140, 20),
+               belly=(255, 196, 90), back=(214, 88, 0),
+               fin=(255, 118, 8), happy=False):
+    """A goldfish drawn axis-aligned (nose +x) on its own layer, then
+    rotated nose-up by angle_deg. Returns the rotated layer."""
+    L = float(length)
+    lay = new_layer()
+    d = ImageDraw.Draw(lay)
+    X, Y = s(cx), s(cy)
 
+    def lx(v):
+        return X + s(v)
 
-def left_normal(pts, i):
-    x0, y0 = pts[max(0, i - 1)]
-    x1, y1 = pts[min(len(pts) - 1, i + 1)]
-    dx, dy = x1 - x0, y1 - y0
-    n = math.hypot(dx, dy) or 1
-    return -dy / n, dx / n  # left of travel direction
+    def ly(v):
+        return Y + s(v)
 
+    # tail: forked fan, two distinct lobes with a notch between them
+    tail = new_layer()
+    td = ImageDraw.Draw(tail)
+    td.polygon([(lx(-0.42 * L), ly(-0.02 * L)), (lx(-0.82 * L), ly(-0.32 * L)),
+                (lx(-0.60 * L), ly(-0.04 * L))], fill=fin + (215,))
+    td.polygon([(lx(-0.42 * L), ly(0.02 * L)), (lx(-0.82 * L), ly(0.32 * L)),
+                (lx(-0.60 * L), ly(0.04 * L))], fill=fin + (215,))
+    td.polygon([(lx(-0.44 * L), ly(0)), (lx(-0.66 * L), ly(-0.13 * L)),
+                (lx(-0.66 * L), ly(0.13 * L))], fill=(255, 170, 60, 170))
+    lay = Image.alpha_composite(lay, tail)
+    d = ImageDraw.Draw(lay)
 
-# main band: tapered, deep cyan-blue with a bright crest
-for i in range(len(pts) - 1):
-    t = i / (len(pts) - 1)
-    wdt = (24 - 19 * t) * SS
-    col = lerp((16, 110, 190), (90, 200, 255), t)
-    wd.line([pts[i], pts[i + 1]], fill=col + (235,), width=int(wdt))
-# inner highlight ribbon, offset toward the inside of the curl
-inner = []
-for i in range(len(pts)):
-    t = i / (len(pts) - 1)
-    nx, ny = left_normal(pts, i)
-    off = (6 - 3.5 * t) * SS
-    inner.append((pts[i][0] + nx * off, pts[i][1] + ny * off))
-for i in range(len(inner) - 1):
-    t = i / (len(inner) - 1)
-    wdt = max(2, int((6 - 4 * t) * SS))
-    wd.line([inner[i], inner[i + 1]], fill=(220, 245, 255, 220), width=wdt)
-# foam: tapering white bubbles along the outer crest, shrinking to the tip
-for i in range(0, len(pts), 2):
-    t = i / (len(pts) - 1)
-    nx, ny = left_normal(pts, i)
-    off = (13 - 9 * t) * SS
-    fx, fy = pts[i][0] - nx * off, pts[i][1] - ny * off
-    r = (5.5 - 4.5 * t) * SS * rng.uniform(0.7, 1.25)
-    wd.ellipse([fx - r, fy - r, fx + r, fy + r],
-               fill=(235, 250, 255, rng.randint(150, 220)))
-# spray droplets flying off the crest near the bowl end
-for _ in range(46):
-    t = rng.uniform(0, 0.45)
-    x, y = pts[int(t * (len(pts) - 1))]
-    x += rng.gauss(0, 26 * SS)
-    y += rng.gauss(0, 26 * SS) - 14 * SS
-    r = rng.uniform(1.5, 4.5) * SS
-    wd.ellipse([x - r, y - r, x + r, y + r],
-               fill=(200, 235, 255, rng.randint(120, 220)))
-wave = wave.filter(ImageFilter.GaussianBlur(1.6))
-base.alpha_composite(wave)
-
-# ================================================================ confetti
-conf = layer()
-cd = ImageDraw.Draw(conf)
-for _ in range(90):
-    # cluster around the galaxy + along the wave, a few drifting elsewhere
-    pick = rng.random()
-    if pick < 0.55:
-        x = cxg + rng.gauss(0, 0.20 * W)
-        y = cyg + rng.gauss(0, 0.16 * W)
-    elif pick < 0.85:
-        t = rng.uniform(0.15, 0.95)
-        x, y = pts[int(t * (len(pts) - 1))]
-        x += rng.gauss(0, 34 * SS)
-        y += rng.gauss(0, 34 * SS)
+    # dorsal fin
+    d.polygon([(lx(-0.10 * L), ly(-0.19 * L)), (lx(0.06 * L), ly(-0.34 * L)),
+               (lx(0.16 * L), ly(-0.18 * L))], fill=fin + (235,))
+    # body
+    d.ellipse([lx(-0.50 * L), ly(-0.21 * L), lx(0.50 * L), ly(0.21 * L)],
+              fill=body + (255,))
+    # darker back
+    d.ellipse([lx(-0.46 * L), ly(-0.21 * L), lx(0.46 * L), ly(-0.02 * L)],
+              fill=back + (255,))
+    d.ellipse([lx(-0.44 * L), ly(-0.20 * L), lx(0.44 * L), ly(-0.06 * L)],
+              fill=(255, 158, 52, 255))
+    # pale belly
+    d.ellipse([lx(-0.38 * L), ly(0.02 * L), lx(0.42 * L), ly(0.21 * L)],
+              fill=belly + (255,))
+    # pectoral fin, small and flat against the belly
+    d.ellipse([lx(-0.04 * L), ly(0.08 * L), lx(0.14 * L), ly(0.20 * L)],
+              fill=fin + (220,))
+    # scale hints
+    for gx in (-0.28, -0.12, 0.04):
+        d.arc([lx(gx * L), ly(-0.10 * L), lx((gx + 0.14) * L), ly(0.10 * L)],
+              start=300, end=60, fill=(255, 220, 140, 160), width=s(3))
+    # gill curve
+    d.arc([lx(0.08 * L), ly(-0.13 * L), lx(0.24 * L), ly(0.13 * L)],
+          start=270, end=90, fill=(190, 70, 0, 200), width=s(4))
+    # body outline
+    d.ellipse([lx(-0.50 * L), ly(-0.21 * L), lx(0.50 * L), ly(0.21 * L)],
+              outline=(170, 60, 0, 255), width=s(4))
+    # eye
+    ex, ey = 0.30 * L, -0.07 * L
+    if happy:
+        d.arc([lx(ex - 0.05 * L), ly(ey - 0.04 * L),
+               lx(ex + 0.05 * L), ly(ey + 0.04 * L)],
+              start=200, end=340, fill=(20, 10, 10, 255), width=s(5))
     else:
-        x = rng.uniform(0.05 * W, 0.95 * W)
-        y = rng.uniform(0.05 * W, 0.75 * W)
-    s = rng.uniform(3, 8) * SS
-    col = rng.choice([ORANGE, MAGENTA, YELLOW, CYAN, (140, 255, 170), WHITE])
-    shape = rng.random()
-    if shape < 0.45:  # rotated rectangle
-        tmp = Image.new("RGBA", (int(s * 2), int(s * 2)), (0, 0, 0, 0))
-        ImageDraw.Draw(tmp).rectangle(
-            [s * 0.4, s * 0.75, s * 1.6, s * 1.25], fill=col + (235,))
-        tmp = tmp.rotate(rng.uniform(0, 360), resample=Image.BICUBIC,
-                         expand=False)
-        conf.alpha_composite(tmp, (int(x - s), int(y - s)))
-    elif shape < 0.75:  # dot
-        cd.ellipse([x - s / 2, y - s / 2, x + s / 2, y + s / 2],
-                   fill=col + (235,))
-    else:  # tiny triangle
-        cd.polygon([(x, y - s), (x - s, y + s * 0.7), (x + s, y + s * 0.7)],
-                   fill=col + (235,))
-base.alpha_composite(conf)
+        d.ellipse([lx(ex - 0.055 * L), ly(ey - 0.055 * L),
+                   lx(ex + 0.055 * L), ly(ey + 0.055 * L)],
+                  fill=(255, 255, 255, 255))
+        d.ellipse([lx(ex - 0.028 * L), ly(ey - 0.028 * L),
+                   lx(ex + 0.028 * L), ly(ey + 0.028 * L)],
+                  fill=(16, 8, 8, 255))
+        d.ellipse([lx(ex + 0.008 * L), ly(ey - 0.022 * L),
+                   lx(ex + 0.024 * L), ly(ey - 0.006 * L)],
+                  fill=(255, 255, 255, 255))
+    # small open smiling mouth at the nose (not a red nose blob)
+    d.ellipse([lx(0.43 * L), ly(0.03 * L), lx(0.50 * L), ly(0.10 * L)],
+              fill=(122, 20, 10, 255))
+    d.arc([lx(0.39 * L), ly(0.00 * L), lx(0.50 * L), ly(0.11 * L)],
+          start=20, end=160, fill=(90, 10, 5, 255), width=s(3))
 
-# ================================================================ bowl (bottom-left)
-bowl = layer()
-bd2 = ImageDraw.Draw(bowl)
-bcx, bcy = 0.225 * W, 0.875 * W     # bowl centre (waterline height)
-bw, bh = 0.165 * W, 0.105 * W      # bowl half-width / body depth
-# table shadow under the bowl
-bd2.ellipse([bcx - bw * 1.02, bcy + bh * 0.88, bcx + bw * 1.02,
-             bcy + bh * 1.12], fill=(0, 0, 0, 110))
-# glass body: straight walls + rounded bottom (bottom half of an ellipse)
-bd2.rectangle([bcx - bw, bcy - bh * 0.30, bcx + bw, bcy + 2],
-              fill=(30, 140, 220, 200))
-bd2.pieslice([bcx - bw, bcy - bh, bcx + bw, bcy + bh],
-             0, 180, fill=(30, 140, 220, 200))
-# water surface
-bd2.ellipse([bcx - bw, bcy - bh * 0.52, bcx + bw, bcy - bh * 0.08],
-            fill=(120, 210, 255, 220))
-# glass rim + highlight
-bd2.arc([bcx - bw, bcy - bh * 0.52, bcx + bw, bcy - bh * 0.08],
-        180, 360, fill=(230, 245, 255, 230), width=int(4 * SS))
-bd2.arc([bcx - bw * 0.88, bcy - bh * 0.25, bcx - bw * 0.28, bcy + bh * 0.85],
-        110, 250, fill=(255, 255, 255, 160), width=int(5 * SS))
+    return lay.rotate(angle_deg, resample=Image.BICUBIC, center=(X, Y))
 
-# second fish inside the bowl, cheering: upright, fins raised, mouth open
-fish2 = layer()
-f2 = ImageDraw.Draw(fish2)
-fx2, fy2 = bcx + 0.02 * W, bcy + 0.02 * W
-# body (small, tilted nose-up)
-body = [(fx2 - 46 * SS, fy2 + 6 * SS), (fx2 - 18 * SS, fy2 - 26 * SS),
-        (fx2 + 26 * SS, fy2 - 30 * SS), (fx2 + 52 * SS, fy2 - 8 * SS),
-        (fx2 + 30 * SS, fy2 + 16 * SS), (fx2 - 10 * SS, fy2 + 26 * SS)]
-f2.polygon(body, fill=(255, 150, 40, 255))
-f2.polygon([(fx2 + 44 * SS, fy2 - 14 * SS), (fx2 + 78 * SS, fy2 - 34 * SS),
-            (fx2 + 72 * SS, fy2 + 2 * SS)], fill=(255, 110, 60, 235))  # tail
-# raised cheering fins
-f2.polygon([(fx2 - 8 * SS, fy2 - 24 * SS), (fx2 - 26 * SS, fy2 - 62 * SS),
-            (fx2 + 2 * SS, fy2 - 44 * SS)], fill=(255, 90, 90, 240))
-f2.polygon([(fx2 + 8 * SS, fy2 - 26 * SS), (fx2 + 30 * SS, fy2 - 58 * SS),
-            (fx2 + 34 * SS, fy2 - 28 * SS)], fill=(255, 90, 90, 240))
-# eye + open mouth
-f2.ellipse([fx2 + 34 * SS, fy2 - 26 * SS, fx2 + 46 * SS, fy2 - 14 * SS],
-           fill=(255, 255, 255, 255))
-f2.ellipse([fx2 + 38 * SS, fy2 - 23 * SS, fx2 + 44 * SS, fy2 - 17 * SS],
-           fill=(10, 10, 20, 255))
-f2.ellipse([fx2 + 50 * SS, fy2 - 12 * SS, fx2 + 58 * SS, fy2 - 2 * SS],
-           fill=(120, 20, 20, 255))
-# bubbles rising from the cheering fish
-for k in range(5):
-    bx = fx2 + 30 * SS + k * 12 * SS
-    by = fy2 - 44 * SS - k * 16 * SS
-    r = (4 + k) * SS
-    f2.ellipse([bx - r, by - r, bx + r, by + r],
-               outline=(190, 235, 255, 200), width=2)
-bowl.alpha_composite(fish2)
-bowl = bowl.filter(ImageFilter.GaussianBlur(0.8))
-base.alpha_composite(bowl)
 
-# ================================================================ leaping goldfish
-# Drawn on its own layer, rotated nose-up-right, lifted clear of the wave band.
-fish = Image.new("RGBA", (int(0.62 * W), int(0.42 * W)), (0, 0, 0, 0))
-fd = ImageDraw.Draw(fish)
-FW, FH = fish.size
-ox, oy = FW * 0.50, FH * 0.52   # fish centre in its layer
-L = 0.24 * W                    # body length
-# flowing tail (behind body)
-fd.polygon([(ox - L * 0.42, oy - 6 * SS), (ox - L * 0.95, oy - 62 * SS),
-            (ox - L * 0.78, oy - 4 * SS), (ox - L * 0.98, oy + 48 * SS),
-            (ox - L * 0.42, oy + 10 * SS)],
-           fill=(255, 90, 90, 225))
-fd.polygon([(ox - L * 0.42, oy - 4 * SS), (ox - L * 0.80, oy - 30 * SS),
-            (ox - L * 0.70, oy + 26 * SS)],
-           fill=(255, 140, 60, 200))
-# body: solid two-tone ellipse, orange back over a gold belly
-fd.ellipse([ox - L * 0.5, oy - 30 * SS, ox + L * 0.5, oy + 30 * SS],
-           fill=(255, 140, 40, 255))
-fd.ellipse([ox - L * 0.42, oy + 2 * SS, ox + L * 0.44, oy + 30 * SS],
-           fill=(255, 200, 90, 255))
-fd.ellipse([ox - L * 0.5, oy - 30 * SS, ox + L * 0.5, oy + 30 * SS],
-           outline=(220, 70, 10, 255), width=int(3 * SS))
-# dorsal + pectoral fins
-fd.polygon([(ox - L * 0.05, oy - 28 * SS), (ox + L * 0.12, oy - 66 * SS),
-            (ox + L * 0.22, oy - 26 * SS)], fill=(255, 120, 50, 240))
-fd.polygon([(ox + L * 0.05, oy + 18 * SS), (ox + L * 0.22, oy + 52 * SS),
-            (ox + L * 0.28, oy + 16 * SS)], fill=(255, 150, 70, 230))
-# gill + eye (nose at +x end)
-fd.arc([ox + L * 0.18, oy - 24 * SS, ox + L * 0.38, oy + 24 * SS],
-       300, 60, fill=(200, 60, 10, 220), width=int(3 * SS))
-fd.ellipse([ox + L * 0.30, oy - 20 * SS, ox + L * 0.42, oy - 8 * SS],
-           fill=(255, 255, 255, 255))
-fd.ellipse([ox + L * 0.335, oy - 17 * SS, ox + L * 0.405, oy - 11 * SS],
-           fill=(12, 12, 24, 255))
-fd.ellipse([ox + L * 0.355, oy - 16 * SS, ox + L * 0.375, oy - 13 * SS],
-           fill=(255, 255, 255, 255))
-# open mouth, mid-leap
-fd.ellipse([ox + L * 0.46, oy - 4 * SS, ox + L * 0.52, oy + 8 * SS],
-           fill=(140, 25, 25, 255))
-# rotate nose-up-right and place: clear above the wave band, below WOW!
-fish = fish.rotate(38, resample=Image.BICUBIC, expand=False)
-base.alpha_composite(fish, (int(0.165 * W), int(0.355 * W)))
+# ------------------------------------------------------------------- build
+def main():
+    # ---- background: deep indigo gradient, lighter toward the bottom
+    base = Image.new("RGBA", (SW, SH), (12, 8, 48, 255))
+    grad = new_layer()
+    gd = ImageDraw.Draw(grad)
+    top = (10, 6, 44)
+    bot = (46, 20, 104)
+    for y in range(SH):
+        t = y / SH
+        c = tuple(int(top[i] + (bot[i] - top[i]) * t) for i in range(3))
+        gd.line([(0, y), (SW, y)], fill=c + (255,))
+    base = Image.alpha_composite(base, grad)
 
-# bubble trail from the bowl up to the leaping fish
-bub = layer()
-bd3 = ImageDraw.Draw(bub)
-for k in range(14):
-    t = k / 13
-    bx = (0.27 + 0.13 * t) * W + rng.gauss(0, 8 * SS)
-    by = (0.78 - 0.30 * t) * W + rng.gauss(0, 8 * SS)
-    r = (3 + 5 * t) * SS
-    bd3.ellipse([bx - r, by - r, bx + r, by + r],
-                outline=(190, 235, 255, 190), width=2)
-    bd3.ellipse([bx - r * 0.35, by - r * 0.35, bx + r * 0.1, by + r * 0.1],
-                fill=(255, 255, 255, 150))
-base.alpha_composite(bub)
+    # faint nebula wash, magenta top-right / teal bottom-left
+    neb = new_layer()
+    soft_disc(neb, 875, 155, 420, (150, 40, 130), 46)
+    soft_disc(neb, 180, 880, 380, (20, 90, 140), 40)
+    base = Image.alpha_composite(base, neb)
 
-# ================================================================ WOW! text
-# Bold tilted yellow with orange outline, fully inside the frame.
-txt = Image.new("RGBA", (int(0.62 * W), int(0.30 * W)), (0, 0, 0, 0))
-td = ImageDraw.Draw(txt)
-font = ImageFont.truetype(FONT_PATH, int(0.115 * W))
-word = "WOW!"
-# soft dark shadow for legibility
-td.text((14 * SS + 6, 12 * SS + 8), word, font=font, fill=(20, 8, 60, 200))
-td.text((14 * SS, 12 * SS), word, font=font, fill=YELLOW + (255,),
-        stroke_width=int(9 * SS), stroke_fill=(255, 90, 0, 255))
-# small white sparkle accents on the letters
-for (sx, sy, sr) in [(0.10, 0.16, 7), (0.52, 0.10, 9), (0.88, 0.30, 6)]:
-    x, y = sx * txt.size[0], sy * txt.size[1]
-    td.line([x - sr * SS, y, x + sr * SS, y], fill=WHITE + (230,),
-            width=2)
-    td.line([x, y - sr * SS, x, y + sr * SS], fill=WHITE + (230,),
-            width=2)
-txt = txt.rotate(-11, resample=Image.BICUBIC, expand=False,
-                 fillcolor=(0, 0, 0, 0))
-base.alpha_composite(txt, (int(0.315 * W), int(0.315 * W)))
+    # scattered sky stars
+    sky = new_layer()
+    sd = ImageDraw.Draw(sky)
+    for _ in range(150):
+        x = rng.uniform(0, W)
+        y = rng.uniform(0, 620)
+        r = rng.uniform(0.8, 2.6)
+        a = rng.randint(120, 255)
+        c = rng.choice([(255, 255, 255), (255, 230, 170), (200, 225, 255),
+                        (255, 190, 220)])
+        star_dot(sd, x, y, r, c + (a,))
+    for _ in range(14):
+        x = rng.uniform(40, W - 40)
+        y = rng.uniform(30, 560)
+        sparkle(sd, x, y, rng.uniform(5, 11),
+                (255, 255, 255, rng.randint(170, 235)))
+    for _ in range(46):
+        x = rng.uniform(0, W)
+        y = rng.uniform(620, 1020)
+        star_dot(sd, x, y, rng.uniform(0.8, 2.2),
+                 (255, 255, 255, rng.randint(70, 150)))
+    base = Image.alpha_composite(base, sky)
 
-# ================================================================ finish
-img = base.convert("RGB").resize((FINAL, FINAL), Image.LANCZOS)
-img.save(OUT, "PNG", optimize=True)
-print(f"wrote {OUT} {img.size[0]}x{img.size[1]}")
+    # ---- galaxy top-right: dense spiral, many stars per arm + dust motes.
+    # Centred (875, 155), clear of the wave curl so the spiral reads.
+    gal = new_layer()
+    soft_disc(gal, 875, 155, 170, (255, 190, 110), 120)
+    soft_disc(gal, 875, 155, 100, (255, 230, 180), 150)
+    soft_disc(gal, 875, 155, 48, (255, 246, 220), 210)
+    gd2 = ImageDraw.Draw(gal)
+    cx, cy = 875.0, 155.0
+    arm_colors = [(255, 255, 255), (255, 205, 110), (255, 140, 205),
+                  (140, 220, 255), (255, 170, 90)]
+    for arm in range(3):
+        off = arm * (2 * math.pi / 3)
+        for i in range(110):
+            t = i / 109
+            ang = off + t * 4.6
+            rad = 16 + t * 205 + rng.gauss(0, 8 + t * 14)
+            x = cx + math.cos(ang) * rad
+            y = cy + math.sin(ang) * rad * 0.82
+            r = rng.uniform(1.2, 4.6) * (1 - t * 0.45)
+            col = rng.choice(arm_colors)
+            star_dot(gd2, x, y, r, col + (rng.randint(190, 255),))
+            if rng.random() < 0.3:
+                sparkle(gd2, x, y, r * 2.4, col + (150,))
+    # dust motes: faint dense cloud around the core
+    for _ in range(520):
+        ang = rng.uniform(0, 2 * math.pi)
+        rad = abs(rng.gauss(0, 85))
+        x = cx + math.cos(ang) * rad
+        y = cy + math.sin(ang) * rad * 0.85
+        star_dot(gd2, x, y, rng.uniform(0.6, 1.8),
+                 rng.choice([(255, 200, 230), (200, 210, 255),
+                             (255, 220, 160)]) + (rng.randint(70, 150),))
+    # confetti bursting out of the galaxy toward the wave
+    conf = [(255, 60, 180), (255, 220, 0), (0, 220, 255), (255, 255, 255),
+            (255, 140, 90)]
+    for _ in range(70):
+        x = rng.uniform(620, 1010)
+        y = rng.uniform(30, 420)
+        w = rng.uniform(4, 11)
+        h = rng.uniform(2, 5)
+        a = rng.uniform(0, math.pi)
+        col = rng.choice(conf) + (rng.randint(180, 255),)
+        pts = []
+        for dx, dy in [(-w, -h), (w, -h), (w, h), (-w, h)]:
+            pts.append((s(x + dx * math.cos(a) - dy * math.sin(a)),
+                        s(y + dx * math.sin(a) + dy * math.cos(a))))
+        gd2.polygon(pts, fill=col)
+    base = Image.alpha_composite(base, gal)
+
+    # ---- soft burst rays behind the leaping fish (7, wide + blurred)
+    rays = new_layer()
+    rd = ImageDraw.Draw(rays)
+    rcx, rcy = 350.0, 600.0
+    for k in range(7):
+        ang = math.radians(-165 + k * 24 + rng.uniform(-5, 5))
+        length = rng.uniform(150, 230)
+        x2 = rcx + math.cos(ang) * length
+        y2 = rcy + math.sin(ang) * length
+        px, py = math.cos(ang + math.pi / 2), math.sin(ang + math.pi / 2)
+        wdt = 13
+        rd.polygon([(s(rcx), s(rcy)),
+                    (s(x2 + px * wdt), s(y2 + py * wdt)),
+                    (s(x2 - px * wdt), s(y2 - py * wdt))],
+                   fill=(255, 205, 110, 48))
+    rays = rays.filter(ImageFilter.GaussianBlur(s(9)))
+    base = Image.alpha_composite(base, rays)
+
+    # ---- the wave: splash curling up toward the galaxy (curl ends
+    # below-left of the galaxy core so the spiral stays visible)
+    path = catmull_rom([(40, 1000), (150, 930), (300, 845), (455, 720),
+                        (575, 565), (655, 425), (705, 320), (750, 262),
+                        (800, 252), (832, 288), (818, 330), (778, 326),
+                        (756, 296)], samples=30)
+    n = len(path)
+    wave = new_layer()
+    wd = ImageDraw.Draw(wave)
+    # body: slimmer tapering band, deep blue -> teal toward the crest
+    for i, (x, y) in enumerate(path):
+        t = i / (n - 1)
+        r = 82 - 58 * t
+        c = (int(14 + 10 * t), int(84 + 66 * t), int(165 + 30 * t))
+        wd.ellipse([s(x - r), s(y - r), s(x + r), s(y + r)], fill=c + (255,))
+    # inner highlight ribbon, offset toward the inside of the curl
+    for i in range(0, n - 2):
+        t = i / (n - 1)
+        x, y = path[i]
+        x2, y2 = path[i + 2]
+        dx, dy = x2 - x, y2 - y
+        m = math.hypot(dx, dy) or 1
+        nx, ny = -dy / m, dx / m  # inside of the curl
+        r = 82 - 58 * t
+        hx, hy = x + nx * r * 0.30, y + ny * r * 0.30
+        wd.ellipse([s(hx - 5), s(hy - 5), s(hx + 5), s(hy + 5)],
+                   fill=(120, 235, 255, 90))
+    # foam crest: fine tapered caps along the outer edge, crest only
+    # (t >= 0.30) so the wave's base stays clean blue
+    for i, (x, y) in enumerate(path):
+        t = i / (n - 1)
+        if i + 2 >= n or t < 0.30:
+            continue
+        x2, y2 = path[i + 2]
+        dx, dy = x2 - x, y2 - y
+        m = math.hypot(dx, dy) or 1
+        nx, ny = dy / m, -dx / m  # outer edge
+        r = 82 - 58 * t
+        fx, fy = x + nx * r * 0.85, y + ny * r * 0.85
+        fr = max(3.5, 11 - 7 * t)
+        wd.ellipse([s(fx - fr), s(fy - fr), s(fx + fr), s(fy + fr)],
+                   fill=(238, 250, 255, 225))
+    # foam curl cap at the tip + spray droplets
+    tip = path[-1]
+    wd.ellipse([s(tip[0] - 16), s(tip[1] - 16), s(tip[0] + 16), s(tip[1] + 16)],
+               fill=(238, 250, 255, 235))
+    for _ in range(26):
+        ang = rng.uniform(0, 2 * math.pi)
+        rr = rng.uniform(26, 70)
+        star_dot(wd, tip[0] + math.cos(ang) * rr, tip[1] + math.sin(ang) * rr,
+                 rng.uniform(2, 6), (230, 246, 255, rng.randint(150, 235)))
+    base = Image.alpha_composite(base, wave)
+
+    # ---- bowl, bottom-left, with the cheering second fish
+    bowl = new_layer()
+    bd = ImageDraw.Draw(bowl)
+    bx, by, brx, bry = 240.0, 885.0, 168.0, 92.0
+    # water
+    bd.ellipse([s(bx - brx + 8), s(by - bry + 26), s(bx + brx - 8), s(by + bry - 6)],
+               fill=(70, 170, 255, 110))
+    bd.ellipse([s(bx - brx + 8), s(by - bry + 26), s(bx + brx - 8), s(by - bry + 44)],
+               fill=(150, 220, 255, 130))
+    # glass rim + shine
+    bd.ellipse([s(bx - brx), s(by - bry), s(bx + brx), s(by + bry)],
+               outline=(235, 245, 255, 235), width=s(7))
+    bd.arc([s(bx - brx + 14), s(by - bry + 18), s(bx + brx - 60), s(by + bry - 14)],
+           start=200, end=330, fill=(255, 255, 255, 170), width=s(8))
+    bd.ellipse([s(bx - brx + 26), s(by + bry - 34), s(bx + brx - 26), s(by + bry - 8)],
+               fill=(120, 200, 255, 60))
+    base = Image.alpha_composite(base, bowl)
+
+    # second fish inside the bowl, cheering nose-up
+    base = Image.alpha_composite(
+        base, fish_layer(240, 880, 118, 62, happy=True))
+    # bubbles rising from the cheering fish
+    bub = new_layer()
+    bud = ImageDraw.Draw(bub)
+    for i in range(9):
+        x = 240 + rng.uniform(-30, 46)
+        y = 800 - i * 16 + rng.uniform(-6, 6)
+        r = rng.uniform(3, 7)
+        bud.ellipse([s(x - r), s(y - r), s(x + r), s(y + r)],
+                    outline=(220, 240, 255, 210), width=s(2))
+    base = Image.alpha_composite(base, bub)
+
+    # ---- splash droplets + motion arcs from bowl rim to the leaping fish
+    spl = new_layer()
+    spd = ImageDraw.Draw(spl)
+    for _ in range(34):
+        x = rng.uniform(210, 420)
+        y = rng.uniform(700, 845)
+        r = rng.uniform(2.5, 8)
+        spd.ellipse([s(x - r), s(y - r), s(x + r), s(y + r)],
+                    fill=(225, 242, 255, rng.randint(170, 240)))
+    for k in range(3):
+        spd.arc([s(190 + k * 26), s(560 + k * 30), s(520 + k * 26), s(850 + k * 30)],
+                start=250, end=330, fill=(150, 225, 255, 110 - k * 22),
+                width=s(7 - k))
+    base = Image.alpha_composite(base, spl)
+
+    # ---- the leaping goldfish, nose-up-right, clear of the wave band
+    base = Image.alpha_composite(base, fish_layer(350, 600, 265, 35))
+
+    # ---- WOW! — bold tilted yellow, orange outline, fully inside frame
+    wow = new_layer()
+    wfont = ImageFont.truetype(FONT_PATH, s(148))
+    tw = ImageDraw.Draw(wow)
+    text = "WOW!"
+    # drop shadow
+    tw.text((s(72), s(72)), text, font=wfont, fill=(8, 4, 40, 200))
+    tw.text((s(64), s(64)), text, font=wfont, fill=(255, 214, 0, 255),
+            stroke_width=s(11), stroke_fill=(255, 110, 0, 255))
+    wow = wow.rotate(-12, resample=Image.BICUBIC, center=(s(270), s(150)))
+    base = Image.alpha_composite(base, wow)
+
+    # ---- foreground sparkles along the diagonal
+    fg = new_layer()
+    fd = ImageDraw.Draw(fg)
+    for (x, y, r) in [(560, 480, 9), (660, 380, 7), (480, 700, 8),
+                      (720, 560, 6), (180, 420, 8), (920, 480, 8),
+                      (120, 640, 6), (860, 640, 7)]:
+        sparkle(fd, x, y, r, (255, 255, 255, 235))
+    base = Image.alpha_composite(base, fg)
+
+    # ---- downscale + save
+    img = base.convert("RGB").resize((W, H), Image.LANCZOS)
+    img.save(OUT, optimize=True)
+    print(f"wrote {OUT}: {img.size[0]}x{img.size[1]}")
+
+
+if __name__ == "__main__":
+    main()

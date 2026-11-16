@@ -1,41 +1,33 @@
-// ai-excited-01 entry (Node 22, standard library only).
-// Builds the image at run time with the bundled PIL script and writes it to
-// the output directory: /output in the grader, MAKEFUN_OUTPUT_DIR locally.
+// ai-excited-01 entry (Node 22, standard library only): the image is the
+// entry.png beside this file, drawn at build time by draw_excited.py, and
+// this program copies it to /output/entry.png. The gate takes a whole PNG
+// of at most 1 MiB and 1024 by 1024 pixels, and the judge sees exactly the
+// bytes copied, so the program runs twice and both runs must write the
+// same bytes.
+//
+// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const here = dirname(fileURLToPath(import.meta.url));
-const outPath = join(outDir, 'entry.png');
+import { copyFileSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 
-mkdirSync(outDir, { recursive: true });
-
-execFileSync('python3', [join(here, 'draw_excited.py'), outPath], {
-  stdio: 'inherit',
-});
-
-if (!existsSync(outPath)) {
-  throw new Error(`draw script did not write ${outPath}`);
-}
-
-// Gate check, same limits as the competition: a whole PNG, at most
-// 1024x1024 pixels and at most 1 MiB.
-const bytes = readFileSync(outPath);
-const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-if (!bytes.subarray(0, 8).equals(PNG_SIG)) {
-  throw new Error('output is not a PNG');
-}
-const width = bytes.readUInt32BE(16);
-const height = bytes.readUInt32BE(20);
-if (width > 1024 || height > 1024) {
-  throw new Error(`output is ${width}x${height}, over the 1024x1024 cap`);
+// The gate takes a whole PNG of at most 1 MiB: refuse to write anything
+// that is not a PNG, or that is over the cap, instead of failing the
+// grade silently.
+const src = new URL('./entry.png', import.meta.url);
+const bytes = readFileSync(src);
+if (bytes.length < 8 || bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+  throw new Error('entry.png is not a PNG (bad magic bytes)');
 }
 if (bytes.length > 1048576) {
-  throw new Error(`output is ${bytes.length} bytes, over the 1 MiB cap`);
+  throw new Error(`entry.png is ${bytes.length} bytes, over the 1 MiB gate cap`);
 }
-console.log(
-  `entry written to ${outPath} (${width}x${height}, ${statSync(outPath).size} bytes)`,
-);
+// The IHDR chunk carries the dimensions at bytes 16-23 (big-endian);
+// the gate also caps the image at 1024 by 1024 pixels.
+const width = bytes.readUInt32BE(16);
+const height = bytes.readUInt32BE(20);
+if (width !== 1024 || height !== 1024) {
+  throw new Error(`entry.png is ${width}x${height}, expected 1024x1024`);
+}
+
+copyFileSync(src, join(process.env.MAKEFUN_OUTPUT_DIR ?? '/output', 'entry.png'));
