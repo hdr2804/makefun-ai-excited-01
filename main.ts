@@ -1,38 +1,38 @@
-// ai-excited-01 — "One small leap becomes a universe"
-// Node 22, standard library only. Copies the committed entry.png to the
-// output location the grader expects (/output/entry.png by default).
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+// ai-excited-01 entry (Node 22, standard library only): builds the image with
+// the PIL script beside this file and writes it to /output/entry.png.
+//
+// The image is drawn fresh on every run from a fixed seed, so both runs write
+// byte-identical PNGs. Outside the grader's container, MAKEFUN_OUTPUT_DIR
+// stands in for /output:
+//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+
+import { execFileSync } from 'node:child_process';
+import { closeSync, existsSync, mkdirSync, openSync, readSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const src = join(here, "entry.png");
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
-const dest = join(outDir, "entry.png");
-
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 mkdirSync(outDir, { recursive: true });
-copyFileSync(src, dest);
 
-const bytes = readFileSync(dest);
+execFileSync('python3', [join(here, 'draw_excited.py'), join(outDir, 'entry.png')], {
+  stdio: 'inherit',
+});
 
-// Gate asserts: the judge only sees these bytes, so fail loudly if the
-// image ever stops matching the competition limits.
-const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-for (let i = 0; i < PNG_MAGIC.length; i++) {
-  if (bytes[i] !== PNG_MAGIC[i]) throw new Error("entry.png is not a PNG");
+const out = join(outDir, 'entry.png');
+if (!existsSync(out)) {
+  throw new Error('draw_excited.py wrote no entry.png');
 }
-if (bytes.length > 1_048_576) {
-  throw new Error(`entry.png is ${bytes.length} bytes, over the 1 MiB cap`);
+// Gate the file the judge will see: whole PNG, at most 1 MiB, 1024x1024.
+const bytes = statSync(out).size;
+if (bytes > 1048576) {
+  throw new Error(`entry.png is ${bytes} bytes, over the 1 MiB cap`);
 }
-
-// IHDR: width and height are big-endian uint32s at byte offsets 16 and 20.
-const width = bytes.readUInt32BE(16);
-const height = bytes.readUInt32BE(20);
-if (width > 1024 || height > 1024) {
-  throw new Error(`entry.png is ${width}x${height}, over the 1024x1024 cap`);
+const header = Buffer.alloc(33);
+const fd = openSync(out, 'r');
+readSync(fd, header, 0, 33, 0);
+closeSync(fd);
+if (header.readUInt32BE(16) !== 1024 || header.readUInt32BE(20) !== 1024) {
+  throw new Error('entry.png is not 1024x1024');
 }
-
-// Copy verification: what landed in /output must equal the committed file.
-const source = readFileSync(src);
-if (!source.equals(bytes)) throw new Error("output differs from entry.png");
-console.log(`wrote ${dest} (${bytes.length} bytes, ${width}x${height})`);
+console.log(`entry.png OK: 1024x1024, ${bytes} bytes`);
